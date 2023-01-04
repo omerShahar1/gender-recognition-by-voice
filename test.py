@@ -1,42 +1,47 @@
 import pyaudio
-import os
 import wave
 import librosa
-import numpy as np
+import pickle as pk
 from sys import byteorder
 from array import array
 from struct import pack
 
 
+from utils import *
+import argparse
+
 THRESHOLD = 500
 CHUNK_SIZE = 1024
 FORMAT = pyaudio.paInt16
 RATE = 16000
-
 SILENCE = 30
+
 
 def is_silent(snd_data):
     "Returns 'True' if below the 'silent' threshold"
     return max(snd_data) < THRESHOLD
 
+
 def normalize(snd_data):
     "Average the volume out"
     MAXIMUM = 16384
-    times = float(MAXIMUM)/max(abs(i) for i in snd_data)
+    times = float(MAXIMUM) / max(abs(i) for i in snd_data)
 
     r = array('h')
     for i in snd_data:
-        r.append(int(i*times))
+        r.append(int(i * times))
     return r
+
 
 def trim(snd_data):
     "Trim the blank spots at the start and end"
+
     def _trim(snd_data):
         snd_started = False
         r = array('h')
 
         for i in snd_data:
-            if not snd_started and abs(i)>THRESHOLD:
+            if not snd_started and abs(i) > THRESHOLD:
                 snd_started = True
                 r.append(i)
 
@@ -53,12 +58,14 @@ def trim(snd_data):
     snd_data.reverse()
     return snd_data
 
+
 def add_silence(snd_data, seconds):
     "Add silence to the start and end of 'snd_data' of length 'seconds' (float)"
-    r = array('h', [0 for i in range(int(seconds*RATE))])
+    r = array('h', [0 for i in range(int(seconds * RATE))])
     r.extend(snd_data)
-    r.extend([0 for i in range(int(seconds*RATE))])
+    r.extend([0 for i in range(int(seconds * RATE))])
     return r
+
 
 def record():
     """
@@ -71,8 +78,8 @@ def record():
     """
     p = pyaudio.PyAudio()
     stream = p.open(format=FORMAT, channels=1, rate=RATE,
-        input=True, output=True,
-        frames_per_buffer=CHUNK_SIZE)
+                    input=True, output=True,
+                    frames_per_buffer=CHUNK_SIZE)
 
     num_silent = 0
     snd_started = False
@@ -106,10 +113,11 @@ def record():
     r = add_silence(r, 0.5)
     return sample_width, r
 
+
 def record_to_file(path):
-    "Records from the microphone and outputs the resulting data to 'path'"
+    """Records from the microphone and outputs the resulting data to 'path'"""
     sample_width, data = record()
-    data = pack('<' + ('h'*len(data)), *data)
+    data = pack('<' + ('h' * len(data)), *data)
 
     wf = wave.open(path, 'wb')
     wf.setnchannels(1)
@@ -119,8 +127,7 @@ def record_to_file(path):
     wf.close()
 
 
-
-def extract_feature(file_name, **kwargs):
+def extract_feature(file_name):
     """
     Extract feature from audio file `file_name`
         Features supported:
@@ -132,60 +139,83 @@ def extract_feature(file_name, **kwargs):
         e.g:
         `features = extract_feature(path, mel=True, mfcc=True)`
     """
-    mfcc = kwargs.get("mfcc")
-    chroma = kwargs.get("chroma")
-    mel = kwargs.get("mel")
-    contrast = kwargs.get("contrast")
-    tonnetz = kwargs.get("tonnetz")
-    X, sample_rate = librosa.core.load(file_name)
-    if chroma or contrast:
-        stft = np.abs(librosa.stft(X))
+    X, sample_rate = librosa.load(file_name)
+
+    stft = np.abs(librosa.stft(X))
     result = np.array([])
-    if mfcc:
-        mfccs = np.mean(librosa.feature.mfcc(y=X, sr=sample_rate, n_mfcc=40).T, axis=0)
-        result = np.hstack((result, mfccs))
-    if chroma:
-        chroma = np.mean(librosa.feature.chroma_stft(S=stft, sr=sample_rate).T,axis=0)
-        result = np.hstack((result, chroma))
-    if mel:
-        mel = np.mean(librosa.feature.melspectrogram(X, sr=sample_rate).T,axis=0)
-        result = np.hstack((result, mel))
-    if contrast:
-        contrast = np.mean(librosa.feature.spectral_contrast(S=stft, sr=sample_rate).T,axis=0)
-        result = np.hstack((result, contrast))
-    if tonnetz:
-        tonnetz = np.mean(librosa.feature.tonnetz(y=librosa.effects.harmonic(X), sr=sample_rate).T,axis=0)
-        result = np.hstack((result, tonnetz))
+
+    mfccs = np.mean(librosa.feature.mfcc(y=X, sr=sample_rate, n_mfcc=40).T, axis=0)
+    result = np.hstack((result, mfccs))
+
+    chroma = np.mean(librosa.feature.chroma_stft(S=stft, sr=sample_rate).T, axis=0)
+    result = np.hstack((result, chroma))
+
+    mel = np.mean(librosa.feature.melspectrogram(y=X, sr=sample_rate).T, axis=0)
+    result = np.hstack((result, mel))
+
+    contrast = np.mean(librosa.feature.spectral_contrast(S=stft, sr=sample_rate).T, axis=0)
+    result = np.hstack((result, contrast))
+
+    tonnetz = np.mean(librosa.feature.tonnetz(y=librosa.effects.harmonic(X), sr=sample_rate).T, axis=0)
+    result = np.hstack((result, tonnetz))
     return result
 
 
+label2age = {
+    0: "teens",
+    1: "twenties",
+    2: "thirties",
+    3: "fourties",
+    4: "fifties",
+    5: "sixties",
+    6: "seventies or more",
+}
+
+
 if __name__ == "__main__":
-    # load the saved model (after training)
-    # model = pickle.load(open("result/mlp_classifier.model", "rb"))
-    from utils import load_data, split_data, create_model
-    import argparse
-    parser = argparse.ArgumentParser(description="""Gender recognition script, this will load the model you trained, 
-                                    and perform inference on a sample you provide (either using your voice or a file)""")
-    parser.add_argument("-f", "--file", help="The path to the file, preferred to be in WAV format")
+    parser = argparse.ArgumentParser(description="""Age recognition script, this will load the model you trained, 
+    and perform inference on a sample you provide (either using your voice or a file)""")
+
+    parser.add_argument("-f", "--file", help="The path to the file, need to be in WAV format.")
     args = parser.parse_args()
     file = args.file
-    # construct the model
-    model = create_model()
-    # load the saved/trained weights
-    model.load_weights("results/model.h5")
+
+    model = create_model()  # construct the model
+    model.load_weights("results/model.h5")  # load the saved/trained weights
+
     if not file or not os.path.isfile(file):
-        # if file not provided, or it doesn't exist, use your voice
-        print("Please talk")
-        # put the file name here
-        file = "test.wav"
-        # record the file (start talking)
-        record_to_file(file)
-    # extract features and reshape it
-    features = extract_feature(file, mel=True).reshape(1, -1)
-    # predict the gender!
-    male_prob = model.predict(features)[0][0]
-    female_prob = 1 - male_prob
-    gender = "male" if male_prob > female_prob else "female"
-    # show the result!
-    print("Result:", gender)
-    print(f"Probabilities:     Male: {male_prob*100:.2f}%    Female: {female_prob*100:.2f}%")
+        print("Please talk")  # if file not provided, or it doesn't exist, use your voice
+        file = "test.wav"  # put the file name here
+        record_to_file(file)  # record the file (start talking)
+
+    features = np.zeros((1, 193))
+    features[0] = extract_feature(file)  # extract features
+
+    sc = pk.load(open("tools/MinMaxScaler.pkl", 'rb'))
+    features = sc.transform(features)
+
+    pca = pk.load(open("tools/PCA.pkl", 'rb'))
+    features = pca.transform(features)
+
+    prob = model.predict(features)[0]
+    max_prob = -1
+    final_predict = -1
+    for i in range(7):
+        if max_prob < prob[i]:
+            final_predict = label2age[i]
+            max_prob = prob[i]
+
+    print("predict age: ", final_predict)
+    print("with probability: ", max_prob)
+
+    print()
+    print("probability of 10-19: ", prob[0])
+    print("probability of 20-29: ", prob[1])
+    print("probability of 30-39: ", prob[2])
+    print("probability of 40-49: ", prob[3])
+    print("probability of 50-59: ", prob[4])
+    print("probability of 60-69: ", prob[5])
+    print("probability of 70-89: ", prob[6])
+
+
+
